@@ -82,6 +82,14 @@ functions {
   ) {
     return rep_vector(m, T);
   }
+
+  vector piecewise_constant_trend(
+    real m,
+    vector delta,
+    matrix A
+  ) {
+    return (m + A * delta);
+  }
 }
 
 data {
@@ -95,7 +103,7 @@ data {
   matrix[T,K] X;        // Regressors
   vector[K] sigmas;     // Scale on seasonality prior
   real<lower=0> tau;    // Scale on changepoints prior
-  int trend_indicator;  // 0 for linear, 1 for logistic, 2 for flat
+  int trend_indicator;  // 0 for linear, 1 for logistic, 2 for flat, 3 for piecewise_constant
   vector[K] s_a;        // Indicator of additive features
   vector[K] s_m;        // Indicator of multiplicative features
 }
@@ -122,6 +130,8 @@ transformed parameters {
     trend = logistic_trend(k, m, delta, t, cap, A, t_change, S);
   } else if (trend_indicator == 2) {
     trend = flat_trend(m, T);
+  } else if (trend_indicator == 3) {
+    trend = piecewise_constant_trend(m, delta, A);
   }
 }
 

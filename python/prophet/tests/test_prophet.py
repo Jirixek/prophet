@@ -248,7 +248,7 @@ class TestProphetDataPrep:
         train = daily_univariate_ts.head(468 // 2).copy()
         #cover history with NAs
         train.loc[train.sample(10).index, "y"] = np.nan
-        
+
         forecaster = Prophet(stan_backend=backend)
         forecaster.fit(train)
         future = forecaster.make_future_dataframe(periods=3, freq="D", include_history=True)
@@ -257,7 +257,7 @@ class TestProphetDataPrep:
 
 class TestProphetTrendComponent:
     def test_invalid_growth_input(self, backend):
-        msg = 'Parameter "growth" should be "linear", ' '"logistic" or "flat".'
+        msg = 'Parameter "growth" should be "linear", ' '"logistic", "flat" or "stepwise".'
         with pytest.raises(ValueError, match=msg):
             Prophet(growth="constant", stan_backend=backend)
 

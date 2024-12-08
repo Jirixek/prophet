@@ -22,6 +22,7 @@ class TrendIndicator(Enum):
     LINEAR = 0
     LOGISTIC = 1
     FLAT = 2
+    PIECEWISE_CONSTANT = 3
 
 @dataclass
 class ModelInputData:

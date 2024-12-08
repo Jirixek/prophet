@@ -169,9 +169,9 @@ class Prophet(object):
 
     def validate_inputs(self):
         """Validates the inputs to Prophet."""
-        if self.growth not in ('linear', 'logistic', 'flat'):
+        if self.growth not in ('linear', 'logistic', 'flat', 'piecewise_constant'):
             raise ValueError(
-                'Parameter "growth" should be "linear", "logistic" or "flat".')
+                'Parameter "growth" should be "linear", "logistic", "flat" or "piecewise_constant".')
         if not isinstance(self.changepoint_range, (int, float)):
             raise ValueError("changepoint_range must be a number in [0, 1]'")
         if ((self.changepoint_range < 0) or (self.changepoint_range > 1)):
@@ -1115,6 +1115,45 @@ class Prophet(object):
         m = df['y_scaled'].mean()
         return k, m
 
+    @staticmethod
+    def piecewise_constant_growth_init(df, changepoints):
+        """Initialize piecewise_constant growth.
+
+        Provides a strong initialization for piecewise_constant growth. Sets
+        the growth to 0 and offset parameter as mean of history y_scaled values.
+
+        Parameters
+        ----------
+        df: pd.DataFrame with columns ds (date), y_scaled (scaled time series),
+            and t (scaled time).
+
+        Returns
+        -------
+        A tuple (k, m) with the rate (k) and offset (m) of the piecewise constant
+        function.
+        """
+        k = 0
+
+        if len(changepoints) == 0:
+            m = df['y_scaled'].mean()
+            delta = np.zeros_like(changepoints)
+            return k, m, delta
+
+        cp_lo = changepoints.iloc[0]
+        df_  = df[df.ds < cp_lo]['y_scaled']
+        m = df_.mean()
+        delta = np.zeros_like(changepoints)
+
+        for i, cp_hi in enumerate(changepoints.iloc[1:]):
+            df_  = df[(df.ds >= cp_lo) & (df.ds < cp_hi)]['y_scaled']
+            delta[i] = df_.mean()
+            cp_lo = cp_hi
+
+        df_  = df[df.ds >= cp_lo]['y_scaled']
+        delta[-1] = df_.mean()
+
+        return k, m, delta
+
     def preprocess(self, df: pd.DataFrame, **kwargs) -> ModelInputData:
         """
         Reformats historical data, standardizes y and extra regressors, sets seasonalities and changepoints.
@@ -1142,7 +1181,7 @@ class Prophet(object):
 
         self.set_changepoints()
 
-        if self.growth in ['linear', 'flat']:
+        if self.growth in ['linear', 'flat', 'piecewise_constant']:
             cap = np.zeros(self.history.shape[0])
         else:
             cap = self.history['cap_scaled']
@@ -1173,14 +1212,19 @@ class Prophet(object):
         """
         if self.growth == 'linear':
             k, m = self.linear_growth_init(self.history)
+            delta = np.zeros_like(self.changepoints_t)
         elif self.growth == 'flat':
             k, m = self.flat_growth_init(self.history)
+            delta = np.zeros_like(self.changepoints_t)
         elif self.growth == 'logistic':
             k, m = self.logistic_growth_init(self.history)
+            delta = np.zeros_like(self.changepoints_t)
+        elif self.growth == 'piecewise_constant':
+            k, m, delta = self.piecewise_constant_growth_init(self.history, self.changepoints)
         return ModelParams(
             k=k,
             m=m,
-            delta=np.zeros_like(self.changepoints_t),
+            delta=delta,
             beta=np.zeros(num_total_regressors),
             sigma_obs=1.0,
         )
@@ -1221,7 +1265,7 @@ class Prophet(object):
         stan_init = dataclasses.asdict(initial_params)
 
         if self.history['y'].min() == self.history['y'].max() and \
-                (self.growth == 'linear' or self.growth == 'flat'):
+                (self.growth == 'linear' or self.growth == 'flat' or self.growth == 'piecewise_constant'):
             self.params = stan_init
             self.params['sigma_obs'] = 1e-9
             for par in self.params:
@@ -1361,6 +1405,24 @@ class Prophet(object):
         m_t = m * np.ones_like(t)
         return m_t
 
+    @staticmethod
+    def piecewise_constant_trend(t, deltas, m, changepoint_ts):
+        """Evaluate the piecewise constant function.
+
+        Parameters
+        ----------
+        t: np.array of times on which the function is evaluated.
+        deltas: np.array of rate changes at each changepoint.
+        m: Float initial offset.
+        changepoint_ts: np.array of changepoint times.
+
+        Returns
+        -------
+        Vector y(t).
+        """
+        deltas_t = (changepoint_ts[None, :] <= t[..., None]) * deltas
+        return deltas_t.sum(axis=1) + m
+
     def predict_trend(self, df):
         """Predict trend using the prophet model.
 
@@ -1386,6 +1448,8 @@ class Prophet(object):
         elif self.growth == 'flat':
             # constant trend
             trend = self.flat_trend(t, m)
+        elif self.growth == 'piecewise_constant':
+            trend = self.piecewise_constant_trend(t, deltas, m, self.changepoints_t)
 
         return trend * self.y_scale + df['floor']
 
@@ -1613,6 +1677,8 @@ class Prophet(object):
                                             changepoint_ts)
         elif self.growth == 'flat':
             trend = self.flat_trend(t, m)
+        if self.growth == 'piecewise_constant':
+            trend = self.piecewise_constant_trend(t, deltas, m, changepoint_ts)
 
         return trend * self.y_scale + df['floor']
 
@@ -1634,6 +1700,8 @@ class Prophet(object):
             )
         elif self.growth == "flat":
             expected = self.flat_trend(df["t"].values, m)
+        elif self.growth == "piecewise_constant":
+            expected = self.piecewise_constant_trend(df["t"].values, deltas, m, self.changepoints_t)
         else:
             raise NotImplementedError
         uncertainty = self._sample_uncertainty(df, n_samples, iteration)
@@ -1688,7 +1756,7 @@ class Prophet(object):
                     n_length=n_length,
                     single_diff=single_diff,
                 )
-            elif self.growth == "flat":
+            elif self.growth == "flat" or self.growth == "piecewise_constant":
                 # no trend uncertainty when there is no growth
                 uncertainties = np.zeros((n_samples, n_length))
             else:
